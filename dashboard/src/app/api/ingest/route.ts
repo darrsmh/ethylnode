@@ -32,3 +32,15 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ ok: true, stored: samples?.length ?? 0 });
 }
+
+export async function GET(req: NextRequest) {
+  try {
+    const [h, s] = await Promise.all([
+      redis.hgetall("seismic:live"),
+      redis.lrange("seismic:samples", -5, -1),
+    ]);
+    return NextResponse.json({ live: h, samples: s });
+  } catch (e: any) {
+    return NextResponse.json({ error: String(e?.message ?? e), name: e?.name, raw: e }, { status: 500 });
+  }
+}
