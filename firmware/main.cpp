@@ -302,16 +302,23 @@ static void wifiReconnect() {
     while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) delay(300);
 }
 
+static SemaphoreHandle_t g_netMutex = nullptr;
+
 static int httpsPost(const char* path, const String& body) {
+    if (g_netMutex) xSemaphoreTake(g_netMutex, portMAX_DELAY);
     WiFiClientSecure client;
     client.setInsecure();
     HTTPClient http;
-    if (!http.begin(client, String(API_BASE_URL) + path)) return -1;
+    if (!http.begin(client, String(API_BASE_URL) + path)) {
+        if (g_netMutex) xSemaphoreGive(g_netMutex);
+        return -1;
+    }
     http.addHeader("Content-Type", "application/json");
     http.addHeader("X-Api-Key", API_KEY);
     http.setTimeout(8000);
     int code = http.POST(body);
     http.end();
+    if (g_netMutex) xSemaphoreGive(g_netMutex);
     return code;
 }
 
@@ -554,7 +561,7 @@ static void taskWiFiUpload(void*) {
         // 5-second batch upload
         if (millis() - lastUpload >= 5000 && WiFi.status() == WL_CONNECTED) {
             lastUpload = millis();
-            StaticJsonDocument<16384> doc;
+            DynamicJsonDocument doc(12288);
             doc["node_id"]     = "ADXL345-01";
             doc["fw"]          = "2.0.0";
             doc["threshold_g"] = DETECT_THRESHOLD_G;
@@ -715,18 +722,19 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(PIN_ADXL_INT1), onDataReady, RISING);
 
     g_alertSem = xSemaphoreCreateBinary();
+    g_netMutex = xSemaphoreCreateMutex();
 
     // Core 0: time-critical 200 Hz sensor acquisition (highest priority)
     xTaskCreatePinnedToCore(taskSensor,   "Sensor",   8192, nullptr,
                             configMAX_PRIORITIES - 1, nullptr, 0);
     // Core 1: WiFi 5-second batch upload
-    xTaskCreatePinnedToCore(taskWiFiUpload, "WiFiUp", 8192, nullptr,
+    xTaskCreatePinnedToCore(taskWiFiUpload, "WiFiUp", 16384, nullptr,
                             configMAX_PRIORITIES - 3, nullptr, 1);
     // Core 1: Immediate alert POST + SD log
-    xTaskCreatePinnedToCore(taskAlert,      "Alert",  4096, nullptr,
+    xTaskCreatePinnedToCore(taskAlert,      "Alert",  8192, nullptr,
                             configMAX_PRIORITIES - 2, nullptr, 1);
     // Core 1: 60-second heartbeat
-    xTaskCreatePinnedToCore(taskHeartbeat,  "HB",     2048, nullptr,
+    xTaskCreatePinnedToCore(taskHeartbeat,  "HB",     8192, nullptr,
                             configMAX_PRIORITIES - 4, nullptr, 1);
 
     Serial.println("[BOOT] Running — 3 pipelines (A/B/C) at 200 Hz");
