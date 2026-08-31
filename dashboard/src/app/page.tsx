@@ -92,7 +92,13 @@ export default function Dashboard() {
 
   const chartData = history.map((s) => ({
     ...s,
-    time: new Date(s.ts).toLocaleTimeString(),
+    time: new Date(s.ts).toLocaleTimeString("en-US", {
+      timeZone: "Asia/Manila",
+      hour12: false,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }),
   }));
 
   return (
@@ -104,7 +110,14 @@ export default function Dashboard() {
         </span>
       </h1>
       <div className="subtitle">
-        Node {live.node_id ?? "--"} | Last update {live.ts ? ago(Number(live.ts)) : "never"}
+        Node {live.node_id ?? "--"} | Last update{" "}
+        {live.ts
+          ? new Date(Number(live.ts)).toLocaleTimeString("en-US", {
+              timeZone: "Asia/Manila",
+              hour12: false,
+            })
+          : "never"}{" "}
+        (PH)
       </div>
 
       <div className="status-row">

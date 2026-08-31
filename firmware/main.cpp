@@ -303,6 +303,25 @@ static void wifiReconnect() {
     while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) delay(300);
 }
 
+// ── NTP: real epoch time (ms) offset vs millis() ─────────────────────
+static volatile int64_t g_epochOffsetMs = 0;  // epochMillis = offset + millis()
+
+static void syncNTP() {
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov", "time.google.com");
+    time_t now = 0;
+    uint32_t t0 = millis();
+    while (now < 100000 && millis() - t0 < 10000) {
+        time(&now);
+        delay(200);
+    }
+    if (now >= 100000) {
+        g_epochOffsetMs = (int64_t)now * 1000 - (int64_t)millis();
+        Serial.printf("[TIME] NTP sync OK, epoch=%ld offsetMs=%lld\n", (long)now, (long long)g_epochOffsetMs);
+    } else {
+        Serial.println("[TIME] NTP sync failed, using boot-relative time");
+    }
+}
+
 static SemaphoreHandle_t g_netMutex = nullptr;
 
 static int httpsPost(const char* path, const String& body) {
@@ -493,7 +512,8 @@ static void taskSensor(void*) {
         {
             int next = (sHead + 1) % 1000;
             if (next != sTail) {
-                sRing[sHead] = { millis(), pga_c, g_liveRoll, g_livePitch,
+                sRing[sHead] = { (uint32_t)(g_epochOffsetMs + (int64_t)millis()),
+                                 pga_c, g_liveRoll, g_livePitch,
                                  sigma_c, sigma_a, sigma_b, snr_db };
                 sHead = next;
             }
@@ -551,6 +571,7 @@ static void taskWiFiUpload(void*) {
     }
     Serial.printf("[WiFi] %s\n",
         WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "OFFLINE");
+    if (WiFi.status() == WL_CONNECTED) syncNTP();
 
     uint32_t lastUpload = 0, lastWifi = 0;
 
