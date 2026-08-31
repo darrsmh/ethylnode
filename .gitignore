@@ -4,3 +4,7 @@ secrets.h
 *.bin
 *.elf
 *.map
+
+dashboard/node_modules/
+dashboard/.next/
+dashboard/.env.local

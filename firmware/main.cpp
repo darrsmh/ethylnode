@@ -1,7 +1,7 @@
 // ================================================================
 //  Seismic Monitoring Node  v2.0.0
-//  Target MCU : ESP32-S3 (Xtensa LX7 dual-core, 240 MHz, HW FPU)
-//  Board      : ESP32-S3 DevKitC-1 (38-pin, Type-C)
+//  Target MCU : ESP32 (Xtensa LX6 dual-core, 240 MHz, HW FPU)
+//  Board      : ESP32 DevKitC (38-pin, WROOM-32)
 //
 //  Architecture: WiFi-only IoT seismic monitoring
 //  Cloud       : Vercel serverless API + Upstash Redis
@@ -18,25 +18,25 @@
 //  • Empirical α selection from {0.90, 0.95, 0.98, 0.99}
 //
 // ──────────────────────────────────────────────────────────────────
-//  PIN CONNECTIONS (ESP32-S3 DevKitC-1, 38-pin)
+//  PIN CONNECTIONS (ESP32 DevKitC, 38-pin)
 // ──────────────────────────────────────────────────────────────────
 //
-//  ADXL345  ←→  HSPI (SPI2)
+//  ADXL345  ←→  VSPI (SPI3)
 //  ┌────────┬──────────────────────────────────────────────────┐
-//  │ ADXL   │ ESP32-S3 GPIO                                    │
+//  │ ADXL   │ ESP32 GPIO                                     │
 //  ├────────┼──────────────────────────────────────────────────┤
 //  │ VCC    │ 3.3 V                                            │
 //  │ GND    │ GND                                              │
 //  │ CS     │ 15  (PIN_ADXL_CS)                               │
-//  │ SCL/SCK│ 14  (HSPI SCK)                                  │
-//  │ SDA/MOSI│13  (HSPI MOSI)                                  │
-//  │ SDO/MISO│12  (HSPI MISO)                                  │
-//  │ INT1   │ 26  (PIN_ADXL_INT1)                             │
+//  │ SCL/SCK│ 18  (VSPI SCK)                                  │
+//  │ SDA/MOSI│23  (VSPI MOSI)                                  │
+//  │ SDO/MISO│19  (VSPI MISO)                                  │
+//  │ INT1   │ 33  (PIN_ADXL_INT1)                             │
 //  └────────┴──────────────────────────────────────────────────┘
 //
-//  MPU6050  ←→  I2C (ESP32-S3)
+//  MPU6050  ←→  I2C (ESP32)
 //  ┌────────┬──────────────────────────────────────────────────┐
-//  │ MPU    │ ESP32-S3 GPIO                                    │
+//  │ MPU    │ ESP32 GPIO                                     │
 //  ├────────┼──────────────────────────────────────────────────┤
 //  │ VCC    │ 3.3 V                                            │
 //  │ GND    │ GND                                              │
@@ -46,16 +46,16 @@
 //  └────────┴──────────────────────────────────────────────────┘
 //  ⚠ Add 4.7 kΩ pull-up resistors on SDA and SCL to 3.3V
 //
-//  MicroSD  ←→  VSPI (SPI3)
+//  MicroSD  ←→  HSPI (SPI2)
 //  ┌────────┬──────────────────────────────────────────────────┐
-//  │ SD     │ ESP32-S3 GPIO                                    │
+//  │ SD     │ ESP32 GPIO                                     │
 //  ├────────┼──────────────────────────────────────────────────┤
 //  │ VCC    │ 3.3 V                                            │
 //  │ GND    │ GND                                              │
 //  │ CS     │ 5   (PIN_SD_CS)                                 │
-//  │ SCK    │ 18  (VSPI SCK)                                  │
-//  │ MOSI   │ 23  (VSPI MOSI)                                 │
-//  │ MISO   │ 19  (VSPI MISO)                                 │
+//  │ SCK    │ 14  (HSPI SCK)                                  │
+//  │ MOSI   │ 13  (HSPI MOSI)                                 │
+//  │ MISO   │ 12  (HSPI MISO)                                 │
 //  └────────┴──────────────────────────────────────────────────┘
 //
 //  Flash: pio run -t upload
@@ -70,6 +70,7 @@
 #include <SD.h>
 #include <ArduinoJson.h>
 #include <math.h>
+#include "ADXL345_WE.h"
 
 #if __has_include("secrets.h")
 #include "secrets.h"
@@ -82,15 +83,15 @@
 
 // ── Pin definitions ───────────────────────────────────────────────
 #define PIN_ADXL_CS     15
-#define PIN_ADXL_SCK    14
-#define PIN_ADXL_MOSI   13
-#define PIN_ADXL_MISO   12
-#define PIN_ADXL_INT1   26
+#define PIN_ADXL_SCK    18
+#define PIN_ADXL_MOSI   23    //adxl sda
+#define PIN_ADXL_MISO   19    //adxl sdo
+#define PIN_ADXL_INT1   33
 
 #define PIN_SD_CS        5
-#define PIN_SD_SCK      18
-#define PIN_SD_MOSI     23
-#define PIN_SD_MISO     19
+#define PIN_SD_SCK      14
+#define PIN_SD_MOSI     13
+#define PIN_SD_MISO     12
 
 #define PIN_I2C_SDA     21
 #define PIN_I2C_SCL     22
@@ -99,13 +100,7 @@
 #define MPU6050_ADDR    0x68
 
 // ── ADXL345 registers ─────────────────────────────────────────────
-#define ADXL_DEVID       0x00
-#define ADXL_DATA_FORMAT 0x31
-#define ADXL_BW_RATE     0x2C
-#define ADXL_POWER_CTL   0x2D
-#define ADXL_INT_ENABLE  0x2E
-#define ADXL_INT_MAP     0x2F
-#define ADXL_DATAX0      0x32
+// Register definitions are now provided by the ADXL345_WE library.
 
 // ── MPU6050 registers ─────────────────────────────────────────────
 #define MPU_ACCEL_XOUT_H 0x3B
@@ -166,8 +161,12 @@ struct AxisFilter {
 };
 
 // ── SPI bus instances ─────────────────────────────────────────────
-SPIClass hspi(HSPI);    // ADXL345  — SPI Mode 3
-SPIClass vspi(VSPI);    // MicroSD  — SPI Mode 0
+SPIClass vspi(VSPI);    // ADXL345  — SPI Mode 3 (bus 3), managed by ADXL345_WE
+SPIClass hspi(HSPI);    // MicroSD  — SPI Mode 0 (bus 2)
+
+// ADXL345 driver (wollewald/ADXL345_WE) on the VSPI bus.
+// Routes VSPI to 18/23/19/15 (SCK, MOSI, MISO, CS).
+ADXL345_WE adxl(&vspi, PIN_ADXL_CS, true, PIN_ADXL_MOSI, PIN_ADXL_MISO, PIN_ADXL_SCK);
 
 // ── Alert payload (Core 0 → Core 1) ───────────────────────────────
 struct AlertPayload {
@@ -194,52 +193,46 @@ volatile bool g_dataReady = false;
 void IRAM_ATTR onDataReady() { g_dataReady = true; }
 
 // ════════════════════════════════════════════════════════════════════
-//  ADXL345 SPI helpers
+//  ADXL345 — handled by the ADXL345_WE library (see adxl global above)
 // ════════════════════════════════════════════════════════════════════
-static void adxlSel()   { digitalWrite(PIN_ADXL_CS, LOW);  }
-static void adxlDesel() { digitalWrite(PIN_ADXL_CS, HIGH); }
-
-static uint8_t adxlReg(uint8_t reg) {
-    hspi.beginTransaction(SPISettings(5000000, MSBFIRST, SPI_MODE3));
-    adxlSel();
-    hspi.transfer(reg | 0x80);
-    uint8_t v = hspi.transfer(0);
-    adxlDesel();
-    hspi.endTransaction();
-    return v;
-}
-
-static void adxlWrite(uint8_t reg, uint8_t val) {
-    hspi.beginTransaction(SPISettings(5000000, MSBFIRST, SPI_MODE3));
-    adxlSel();
-    hspi.transfer(reg & 0x7F);
-    hspi.transfer(val);
-    adxlDesel();
-    hspi.endTransaction();
-}
-
-static void adxlXYZ(int16_t& rx, int16_t& ry, int16_t& rz) {
-    uint8_t b[6];
-    hspi.beginTransaction(SPISettings(5000000, MSBFIRST, SPI_MODE3));
-    adxlSel();
-    hspi.transfer(ADXL_DATAX0 | 0x80 | 0x40);
-    for (auto& x : b) x = hspi.transfer(0);
-    adxlDesel();
-    hspi.endTransaction();
-    rx = (int16_t)((b[1] << 8) | b[0]);
-    ry = (int16_t)((b[3] << 8) | b[2]);
-    rz = (int16_t)((b[5] << 8) | b[4]);
-}
 
 static bool initADXL345() {
-    if (adxlReg(ADXL_DEVID) != 0xE5) return false;
-    adxlWrite(ADXL_DATA_FORMAT, 0x0B); // ±16g, full-res
-    adxlWrite(ADXL_BW_RATE,     0x0B); // 200 Hz ODR
-    adxlWrite(ADXL_INT_ENABLE,  0x80); // DATA_READY on INT1
-    adxlWrite(ADXL_INT_MAP,     0x00);
-    adxlWrite(ADXL_POWER_CTL,   0x08); // measure
-    Serial.println("[ADXL345] OK — 200 Hz, ±16g, full-res, INT1");
+    // ADXL345_WE brings up the VSPI bus and applies full-res defaults.
+    bool ini = adxl.init();
+    Serial.printf("[ADXL345] init()=%s\n", ini ? "OK" : "FAIL");
+
+    uint8_t devid = adxl.getDeviceID();
+    Serial.printf("[ADXL345] DEVID=0x%02X (expect 0xE5)\n", devid);
+
+    if (!ini) return false;
+
+    adxl.setSPIClockSpeed(4000000);                   // 4 MHz (margin below 5 MHz max)
+    if (!adxl.setDataRate(ADXL345_DATA_RATE_200)) { Serial.println("[ADXL345] setDataRate FAIL"); return false; } // 200 Hz ODR
+    if (!adxl.setRange(ADXL345_RANGE_16G))      { Serial.println("[ADXL345] setRange FAIL"); return false; }      // ±16g (full-res kept)
+    if (!adxl.setInterrupt(ADXL345_DATA_READY, INT_PIN_1)) { Serial.println("[ADXL345] setInterrupt FAIL"); return false; } // DATA_READY → INT1
+    if (!adxl.isConnected())                    { Serial.println("[ADXL345] isConnected FAIL (DEVID mismatch)"); return false; } // DEVID == 0xE5
+
+    Serial.println("[ADXL345] OK — 200 Hz, ±16g, full-res, INT1 (ADXL345_WE)");
     return true;
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  I2C bus scan
+// ════════════════════════════════════════════════════════════════════
+static void scanI2C() {
+    Serial.println("[I2C] Scanning bus…");
+    uint8_t count = 0;
+    for (uint8_t addr = 1; addr < 127; addr++) {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0) {
+            Serial.printf("[I2C]   found 0x%02X\n", addr);
+            count++;
+        }
+    }
+    if (count == 0)
+        Serial.println("[I2C]   NO devices found — check SDA/SCL wiring + pull-ups + power");
+    else
+        Serial.printf("[I2C]   %u device(s) on bus\n", count);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -276,6 +269,11 @@ static void mpuReadGyro(float& gx, float& gy, float& gz) {
 }
 
 static bool initMPU6050() {
+    Wire.beginTransmission(MPU6050_ADDR);
+    if (Wire.endTransmission() != 0) {
+        Serial.printf("[MPU6050] NACK at address 0x%02X — no device responds\n", MPU6050_ADDR);
+        return false;
+    }
     mpuWrite(MPU_PWR_MGMT_1, 0x00); delay(10);  // wake
     mpuWrite(MPU_GYRO_CONFIG,  0x00);           // ±250°/s
     mpuWrite(MPU_CONFIG,       0x03);           // DLPF 42 Hz
@@ -286,7 +284,9 @@ static bool initMPU6050() {
     Wire.write(0x75);
     Wire.endTransmission(false);
     Wire.requestFrom((uint8_t)MPU6050_ADDR, (uint8_t)1, (uint8_t)true);
-    if (Wire.read() != 0x68) return false;
+    uint8_t whoami = Wire.read();
+    Serial.printf("[MPU6050] WHO_AM_I = 0x%02X (expect 0x68 MPU6050 / 0x70 MPU6500)\n", whoami);
+    if (whoami != 0x68 && whoami != 0x70) return false;
     Serial.println("[MPU6050] OK — ±2g accel, ±250°/s gyro, DLPF 42 Hz");
     return true;
 }
@@ -318,17 +318,21 @@ static int httpsPost(const char* path, const String& body) {
 // ════════════════════════════════════════════════════════════════════
 //  MicroSD helpers
 // ════════════════════════════════════════════════════════════════════
+static bool sdAvailable = false;
+
 static bool initSD() {
-    vspi.begin(PIN_SD_SCK, PIN_SD_MISO, PIN_SD_MOSI, PIN_SD_CS);
-    if (!SD.begin(PIN_SD_CS, vspi, 8000000)) {
-        Serial.println("[SD] Card init failed — check VSPI wiring");
+    hspi.begin(PIN_SD_SCK, PIN_SD_MISO, PIN_SD_MOSI, PIN_SD_CS);
+    if (!SD.begin(PIN_SD_CS, hspi, 8000000)) {
+        Serial.println("[SD] Card init failed — check HSPI wiring");
         return false;
     }
-    Serial.println("[SD] OK — 8 MHz VSPI");
+    Serial.println("[SD] OK — 8 MHz HSPI");
+    sdAvailable = true;
     return true;
 }
 
 static void sdLog(const String& line) {
+    if (!sdAvailable) return;
     File f = SD.open("/seismic.csv", FILE_APPEND);
     if (f) { f.println(line); f.close(); }
 }
@@ -372,12 +376,15 @@ static void taskSensor(void*) {
     while (true) {
         // Wait for ADXL345 DATA_READY on INT1 (max 6 ms)
         uint32_t t0 = millis();
-        while (!g_dataReady && (millis() - t0 < 6)) taskYIELD();
+        while (!g_dataReady && (millis() - t0 < 6)) vTaskDelay(1);
         g_dataReady = false;
 
         // ── Read ADXL345 (Eq 3.1) ────────────────────────────────
-        int16_t rxa, rya, rza;
-        adxlXYZ(rxa, rya, rza);
+        xyzFloat adxlRaw;
+        adxl.getRawValues(&adxlRaw);
+        int16_t rxa = (int16_t)adxlRaw.x;
+        int16_t rya = (int16_t)adxlRaw.y;
+        int16_t rza = (int16_t)adxlRaw.z;
         float ax_adxl = rxa * ADXL_SCALE_G;
         float ay_adxl = rya * ADXL_SCALE_G;
         float az_adxl = rza * ADXL_SCALE_G;
@@ -460,6 +467,14 @@ static void taskSensor(void*) {
         g_liveSigmaA = sigma_a;
         g_liveSigmaM = sigma_b;
         g_liveSnrDb  = snr_db;
+
+        // ── Live telemetry print (~1 Hz) ─────────────────────────
+        static uint32_t lastPrint = 0;
+        if (millis() - lastPrint >= 1000) {
+            lastPrint = millis();
+            Serial.printf("[LIVE] PGA=%.5fg sigma_f=%.6fg sigma_a=%.6fg sigma_m=%.6fg SNR=%.1fdB roll=%.2f pitch=%.2f\n",
+                g_livePGA, g_liveSigmaF, g_liveSigmaA, g_liveSigmaM, g_liveSnrDb, g_liveRoll, g_livePitch);
+        }
 
         // ── Detection FSM (Pipeline C PGA) ───────────────────────
         switch (state) {
@@ -666,34 +681,36 @@ static void taskHeartbeat(void*) {
 void setup() {
     Serial.begin(115200); delay(500);
     Serial.println("\n[BOOT] Seismic Monitoring Node v2.0.0");
-    Serial.println("[BOOT] Board: ESP32-S3 DevKitC-1 (38-pin, Type-C)");
+    Serial.println("[BOOT] Board: ESP32 DevKitC (38-pin, WROOM-32)");
     Serial.println("[BOOT] Arch:  WiFi-only IoT cloud monitoring");
     Serial.println("[BOOT] Fusion: Dual-accelerometer weighted (ADXL345 + MPU6050)");
 
     pinMode(PIN_LED,     OUTPUT);
-    pinMode(PIN_ADXL_CS, OUTPUT);
-    digitalWrite(PIN_ADXL_CS, HIGH);
     pinMode(PIN_SD_CS,   OUTPUT);
     digitalWrite(PIN_SD_CS,   HIGH);
+    
+    pinMode(PIN_ADXL_CS, OUTPUT);
+    digitalWrite(PIN_ADXL_CS, HIGH);  // CS is active-low, so HIGH = inactive
 
-    // ADXL345 on HSPI (SPI Mode 3)
-    hspi.begin(PIN_ADXL_SCK, PIN_ADXL_MISO, PIN_ADXL_MOSI, PIN_ADXL_CS);
+    delay(100);  // Give CS pin time to stabilize before ADXL345_WE initializes
+
+    // ADXL345 is initialised on the VSPI bus by ADXL345_WE inside initADXL345().
 
     // I2C for MPU6050
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
     Wire.setClock(400000);
+    delay(10);
+    scanI2C();
 
     if (!initADXL345()) {
-        Serial.println("[FATAL] ADXL345 not detected — check HSPI wiring");
+        Serial.println("[FATAL] ADXL345 not detected — check VSPI wiring");
         while (true) { digitalWrite(PIN_LED, !digitalRead(PIN_LED)); delay(200); }
     }
     if (!initMPU6050()) {
         Serial.println("[FATAL] MPU6050 not detected — check I2C wiring");
         while (true) { digitalWrite(PIN_LED, !digitalRead(PIN_LED)); delay(500); }
     }
-    if (!initSD()) {
-        Serial.println("[WARN] SD card not detected — logging WiFi-only");
-    }
+    // initSD();  // uncomment when SD card is wired up
 
     attachInterrupt(digitalPinToInterrupt(PIN_ADXL_INT1), onDataReady, RISING);
 
