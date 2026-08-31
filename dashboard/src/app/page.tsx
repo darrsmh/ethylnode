@@ -44,8 +44,10 @@ interface Alert {
   sigma_fused: number;
 }
 
-function fmt(n: number | undefined, d = 5) {
-  return n !== undefined ? n.toFixed(d) : "--";
+function fmt(n: unknown, d = 5) {
+  const num = typeof n === "string" ? parseFloat(n) : Number(n);
+  if (num === undefined || num === null || Number.isNaN(num)) return "--";
+  return num.toFixed(d);
 }
 
 function ago(ms: number) {

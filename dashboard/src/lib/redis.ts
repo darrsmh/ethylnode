@@ -17,7 +17,8 @@ export async function updateLive(data: Record<string, unknown>) {
 }
 
 export async function getLive() {
-  return redis.hgetall(LIVE_KEY);
+  const live = await redis.hgetall(LIVE_KEY);
+  return live && typeof live === "object" ? live : {};
 }
 
 export async function pushSamples(samples: object[]) {
@@ -31,7 +32,17 @@ export async function pushSamples(samples: object[]) {
 
 export async function getSamples(count = 200) {
   const raw = await redis.zrange(SAMPLES_KEY, -count, -1);
-  return raw.map((r) => (typeof r === "string" ? JSON.parse(r) : r));
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((r) => typeof r === "string")
+    .map((r) => {
+      try {
+        return JSON.parse(r as string);
+      } catch {
+        return null;
+      }
+    })
+    .filter((s) => s !== null);
 }
 
 export async function pushAlert(alert: object) {
@@ -41,7 +52,17 @@ export async function pushAlert(alert: object) {
 
 export async function getAlerts(count = 20) {
   const raw = await redis.lrange(ALERTS_KEY, 0, count - 1);
-  return raw.map((r) => (typeof r === "string" ? JSON.parse(r) : r));
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((r) => typeof r === "string")
+    .map((r) => {
+      try {
+        return JSON.parse(r as string);
+      } catch {
+        return null;
+      }
+    })
+    .filter((a) => a !== null);
 }
 
 export async function setHeartbeat(nodeId: string, data: Record<string, unknown>) {
