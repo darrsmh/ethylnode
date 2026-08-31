@@ -111,7 +111,7 @@
 #define MPU_CONFIG       0x1A
 
 // ── Signal-processing constants ───────────────────────────────────
-constexpr float ADXL_SCALE_G   = 0.0312f;     // Eq 3.1: ±16g, 3.9 mg/LSB × rangeFactor 8
+constexpr float ADXL_SCALE_G   = 0.0039f;      // Eq 3.1: 3.9 mg/LSB (full-res)
 constexpr float MPU_SCALE_2G   = 1.0f / 16384.0f;  // ±2g mode
 constexpr float MPU_SCALE_16G  = 1.0f / 2048.0f;   // ±16g mode
 constexpr float MPU_GYRO_SCALE = (M_PI / 180.0f) / 131.0f; // ±250°/s
@@ -209,6 +209,7 @@ static bool initADXL345() {
     adxl.setSPIClockSpeed(4000000);                   // 4 MHz (margin below 5 MHz max)
     if (!adxl.setDataRate(ADXL345_DATA_RATE_200)) { Serial.println("[ADXL345] setDataRate FAIL"); return false; } // 200 Hz ODR
     if (!adxl.setRange(ADXL345_RANGE_16G))      { Serial.println("[ADXL345] setRange FAIL"); return false; }      // ±16g (full-res kept)
+    adxl.setFullRes(true);                       // restore full-res (setRange clears it; keeps 3.9 mg/LSB)
     if (!adxl.setInterrupt(ADXL345_DATA_READY, INT_PIN_1)) { Serial.println("[ADXL345] setInterrupt FAIL"); return false; } // DATA_READY → INT1
     if (!adxl.isConnected())                    { Serial.println("[ADXL345] isConnected FAIL (DEVID mismatch)"); return false; } // DEVID == 0xE5
 
@@ -556,8 +557,8 @@ static void taskWiFiUpload(void*) {
     while (true) {
         if (millis() - lastWifi > 30000) { lastWifi = millis(); wifiReconnect(); }
 
-        // 5-second batch upload
-        if (millis() - lastUpload >= 5000 && WiFi.status() == WL_CONNECTED) {
+        // 1-second batch upload
+        if (millis() - lastUpload >= 1000 && WiFi.status() == WL_CONNECTED) {
             lastUpload = millis();
             DynamicJsonDocument doc(10240);
             doc["node_id"]     = "ADXL345-01";

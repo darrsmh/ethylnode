@@ -86,7 +86,7 @@ export default function Dashboard() {
     fetchLive();
     fetchHistory();
     const t1 = setInterval(fetchLive, 1000);
-    const t2 = setInterval(fetchHistory, 5000);
+    const t2 = setInterval(fetchHistory, 1000);
     return () => { clearInterval(t1); clearInterval(t2); };
   }, [fetchLive, fetchHistory]);
 
