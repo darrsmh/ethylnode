@@ -111,7 +111,7 @@
 #define MPU_CONFIG       0x1A
 
 // ── Signal-processing constants ───────────────────────────────────
-constexpr float ADXL_SCALE_G   = 0.0039f;      // Eq 3.1: 3.9 mg/LSB
+constexpr float ADXL_SCALE_G   = 0.0312f;     // Eq 3.1: ±16g, 3.9 mg/LSB × rangeFactor 8
 constexpr float MPU_SCALE_2G   = 1.0f / 16384.0f;  // ±2g mode
 constexpr float MPU_SCALE_16G  = 1.0f / 2048.0f;   // ±16g mode
 constexpr float MPU_GYRO_SCALE = (M_PI / 180.0f) / 131.0f; // ±250°/s
