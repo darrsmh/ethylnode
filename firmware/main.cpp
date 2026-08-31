@@ -310,13 +310,18 @@ static int httpsPost(const char* path, const String& body) {
     client.setInsecure();
     HTTPClient http;
     if (!http.begin(client, String(API_BASE_URL) + path)) {
+        Serial.printf("[NET] begin() failed: %s%s\n", API_BASE_URL, path);
         if (g_netMutex) xSemaphoreGive(g_netMutex);
         return -1;
     }
     http.addHeader("Content-Type", "application/json");
     http.addHeader("X-Api-Key", API_KEY);
-    http.setTimeout(8000);
+    http.setTimeout(10000);
     int code = http.POST(body);
+    if (code < 0) {
+        Serial.printf("[NET] POST error: code=%d, conn=%d, freeHeap=%d\n",
+                      code, client.connected() ? 1 : 0, ESP.getFreeHeap());
+    }
     http.end();
     if (g_netMutex) xSemaphoreGive(g_netMutex);
     return code;
@@ -347,6 +352,14 @@ static void sdLog(const String& line) {
 // ════════════════════════════════════════════════════════════════════
 //  CORE 0 — 200 Hz sensor task (Pipeline A, B, C)
 // ════════════════════════════════════════════════════════════════════
+struct SampleRec {
+    uint32_t ts;
+    float pga_c, roll, pitch, sigma_f, sigma_a, sigma_m, snr_db;
+};
+
+static SampleRec sRing[1000];  // 5 seconds @ 200 Hz
+static volatile int sHead = 0, sTail = 0;
+
 static void taskSensor(void*) {
     // ── Filter state for all three pipelines ──────────────────────
     AxisFilter fXa, fYa, fZa;   // Pipeline A: ADXL345 only
@@ -475,6 +488,16 @@ static void taskSensor(void*) {
         g_liveSigmaM = sigma_b;
         g_liveSnrDb  = snr_db;
 
+        // ── Enqueue into shared ring buffer (200 Hz) ──────────────
+        {
+            int next = (sHead + 1) % 1000;
+            if (next != sTail) {
+                sRing[sHead] = { millis(), pga_c, g_liveRoll, g_livePitch,
+                                 sigma_c, sigma_a, sigma_b, snr_db };
+                sHead = next;
+            }
+        }
+
         // ── Live telemetry print (~1 Hz) ─────────────────────────
         static uint32_t lastPrint = 0;
         if (millis() - lastPrint >= 1000) {
@@ -519,14 +542,6 @@ static void taskSensor(void*) {
 // ════════════════════════════════════════════════════════════════════
 //  CORE 1 TASK A — WiFi continuous upload (5-second batches)
 // ════════════════════════════════════════════════════════════════════
-struct SampleRec {
-    uint32_t ts;
-    float pga_c, roll, pitch, sigma_f, sigma_a, sigma_m, snr_db;
-};
-
-static SampleRec sRing[1000];  // 5 seconds @ 200 Hz
-static volatile int sHead = 0, sTail = 0;
-
 static void taskWiFiUpload(void*) {
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     {
@@ -539,23 +554,6 @@ static void taskWiFiUpload(void*) {
     uint32_t lastUpload = 0, lastWifi = 0;
 
     while (true) {
-        // Enqueue sample at 200 Hz (called every 5 ms from sensor task via shared ring)
-        // Actually: sensor task writes directly; this task just uploads batches
-        // We poll g_live* at 10 Hz for the ring buffer
-        static uint32_t lastSample = 0;
-        if (millis() - lastSample >= 5) {
-            lastSample = millis();
-            int next = (sHead + 1) % 1000;
-            if (next != sTail) {
-                sRing[sHead] = {
-                    millis(),
-                    g_livePGA, g_liveRoll, g_livePitch,
-                    g_liveSigmaF, g_liveSigmaA, g_liveSigmaM, g_liveSnrDb
-                };
-                sHead = next;
-            }
-        }
-
         if (millis() - lastWifi > 30000) { lastWifi = millis(); wifiReconnect(); }
 
         // 5-second batch upload
@@ -586,6 +584,8 @@ static void taskWiFiUpload(void*) {
             }
             if (cnt) {
                 String body; serializeJson(doc, body);
+                Serial.printf("[WiFi] %d samples, body=%u B, freeHeap=%d\n",
+                              cnt, body.length(), ESP.getFreeHeap());
                 int code = httpsPost("/api/ingest", body);
                 Serial.printf("[WiFi] %d samples → HTTP %d\n", cnt, code);
             }
