@@ -22,18 +22,20 @@ export async function getLive() {
 }
 
 export async function pushSamples(samples: object[]) {
-  const pipeline = redis.pipeline();
+  if (!samples.length) return;
+  const multi = redis.multi();
   for (const s of samples) {
-    pipeline.zadd(SAMPLES_KEY, { score: (s as any).ts, member: JSON.stringify(s) });
+    multi.zadd(SAMPLES_KEY, { score: (s as any).ts, member: JSON.stringify(s) });
   }
-  pipeline.zremrangebyrank(SAMPLES_KEY, 0, -(MAX_SAMPLES + 1));
-  await pipeline.exec();
+  multi.zremrangebyrank(SAMPLES_KEY, 0, -(MAX_SAMPLES + 1));
+  await multi.exec();
 }
 
 export async function getSamples(count = 200) {
-  const raw = await redis.zrange(SAMPLES_KEY, -count, -1);
+  const raw = await redis.zrange(SAMPLES_KEY, 0, -1, { rev: true });
   if (!Array.isArray(raw)) return [];
-  return raw
+  const parsed = raw
+    .slice(0, count)
     .filter((r) => typeof r === "string")
     .map((r) => {
       try {
@@ -43,6 +45,7 @@ export async function getSamples(count = 200) {
       }
     })
     .filter((s) => s !== null);
+  return parsed.reverse();
 }
 
 export async function pushAlert(alert: object) {
