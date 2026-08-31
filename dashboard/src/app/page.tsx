@@ -44,6 +44,7 @@ interface Alert {
   ts_ms: number;
   snr_db: number;
   sigma_fused: number;
+  created_at?: string;
 }
 
 function fmt(n: unknown, d = 5) {
@@ -52,8 +53,21 @@ function fmt(n: unknown, d = 5) {
   return num.toFixed(d);
 }
 
+function epochMs(n: unknown): number {
+  const t = typeof n === "string" ? Date.parse(n) : Number(n);
+  if (!Number.isFinite(t)) return NaN;
+  // Sanity-check: only accept plausible epoch-ms timestamps (2000-02-01 .. 2037-12-31).
+  // This rejects device uptime in ms (small values) that would otherwise display
+  // as "~490,000 hours ago".
+  const lo = Date.UTC(2000, 1, 1);
+  const hi = Date.UTC(2038, 0, 1);
+  return t > lo && t < hi ? t : NaN;
+}
+
 function ago(ms: number) {
+  if (!Number.isFinite(ms)) return "--";
   const s = Math.floor((Date.now() - ms) / 1000);
+  if (s < 0) return "now";
   if (s < 60) return `${s}s ago`;
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   return `${Math.floor(s / 3600)}h ago`;
@@ -290,7 +304,7 @@ export default function Dashboard() {
               PGA: <span className="pga">{a.pga?.toFixed(5)}g</span>
               {" "} | SNR: {a.snr_db?.toFixed(1)} dB
             </span>
-            <span className="time">{a.ts_ms ? ago(a.ts_ms) : ""}</span>
+            <span className="time">{ago(epochMs(a.ts_ms) || epochMs(a.created_at))}</span>
           </div>
         ))}
       </div>

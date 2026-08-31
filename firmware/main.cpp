@@ -574,7 +574,8 @@ static void taskSensor(void*) {
                     if (++confirmN >= CONFIRM_SAMPLES) {
                         AlertPayload alert = {
                             pga_c, axCached, ayCached, azCached,
-                            sigma_c, sigma_a, sigma_b, snr_db, millis()
+                            sigma_c, sigma_a, sigma_b, snr_db,
+                            (uint32_t)(g_epochOffsetMs + (int64_t)millis())
                         };
                         memcpy((void*)&g_alert, &alert, sizeof(alert));
                         g_alertReady = true;
@@ -615,11 +616,13 @@ static void taskWiFiUpload(void*) {
 
     uint32_t lastUpload = 0, lastWifi = 0;
 
-    // Reuse a single JSON document to avoid heap fragmentation
-    DynamicJsonDocument doc(10240);
+    // Reuse a single JSON document to avoid heap fragmentation.
+    // Sized for up to 200 samples (~130 B/sample) + header.
+    static DynamicJsonDocument doc(30000);
 
-    // Temp buffer to snapshot ring buffer before POST — prevents data loss on failure
-    SampleRec tmpBuf[80];
+    // Temp buffer to snapshot ring buffer before POST — prevents data loss on
+    // failure. Static so it lives in BSS, not on the 16KB task stack.
+    static SampleRec tmpBuf[200];
 
     while (true) {
         if (millis() - lastWifi > 30000) { lastWifi = millis(); wifiReconnect(); }
@@ -631,7 +634,7 @@ static void taskWiFiUpload(void*) {
             // Snapshot samples into temp buffer WITHOUT advancing tail
             int cnt = 0;
             int peek = sTail;
-            while (peek != sHead && cnt < 80) {
+            while (peek != sHead && cnt < 200) {
                 tmpBuf[cnt] = sRing[peek];
                 peek = (peek + 1) % 1000;
                 cnt++;
