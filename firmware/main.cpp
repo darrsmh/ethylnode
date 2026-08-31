@@ -559,7 +559,7 @@ static void taskWiFiUpload(void*) {
         // 5-second batch upload
         if (millis() - lastUpload >= 5000 && WiFi.status() == WL_CONNECTED) {
             lastUpload = millis();
-            DynamicJsonDocument doc(12288);
+            DynamicJsonDocument doc(10240);
             doc["node_id"]     = "ADXL345-01";
             doc["fw"]          = "2.0.0";
             doc["threshold_g"] = DETECT_THRESHOLD_G;
@@ -569,16 +569,16 @@ static void taskWiFiUpload(void*) {
 
             JsonArray arr = doc.createNestedArray("samples");
             int cnt = 0;
-            while (sTail != sHead && cnt < 200) {
+            while (sTail != sHead && cnt < 80) {
                 JsonObject s = arr.createNestedObject();
                 s["ts"]      = sRing[sTail].ts;
-                s["pga_c"]   = serialized(String(sRing[sTail].pga_c,  5));
-                s["roll"]    = serialized(String(sRing[sTail].roll,    2));
-                s["pitch"]   = serialized(String(sRing[sTail].pitch,   2));
-                s["sigma_f"] = serialized(String(sRing[sTail].sigma_f, 5));
-                s["sigma_a"] = serialized(String(sRing[sTail].sigma_a, 5));
-                s["sigma_m"] = serialized(String(sRing[sTail].sigma_m, 5));
-                s["snr_db"]  = serialized(String(sRing[sTail].snr_db,  2));
+                s["pga_c"]   = sRing[sTail].pga_c;
+                s["roll"]    = sRing[sTail].roll;
+                s["pitch"]   = sRing[sTail].pitch;
+                s["sigma_f"] = sRing[sTail].sigma_f;
+                s["sigma_a"] = sRing[sTail].sigma_a;
+                s["sigma_m"] = sRing[sTail].sigma_m;
+                s["snr_db"]  = sRing[sTail].snr_db;
                 sTail = (sTail + 1) % 1000;
                 cnt++;
             }
