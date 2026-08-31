@@ -23,12 +23,10 @@ export async function getLive() {
 
 export async function pushSamples(samples: object[]) {
   if (!samples.length) return;
-  const multi = redis.multi();
   for (const s of samples) {
-    multi.zadd(SAMPLES_KEY, { score: (s as any).ts, member: JSON.stringify(s) });
+    await redis.zadd(SAMPLES_KEY, { score: (s as any).ts, member: JSON.stringify(s) });
   }
-  multi.zremrangebyrank(SAMPLES_KEY, 0, -(MAX_SAMPLES + 1));
-  await multi.exec();
+  await redis.zremrangebyrank(SAMPLES_KEY, 0, -(MAX_SAMPLES + 1));
 }
 
 export async function getSamples(count = 200) {
