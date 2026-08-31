@@ -35,12 +35,11 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   try {
-    const [h, zr, zrev] = await Promise.all([
+    const [h, zr] = await Promise.all([
       redis.hgetall("seismic:live"),
       redis.zrange("seismic:samples", -5, -1),
-      (redis as any).zrevrange("seismic:samples", 0, -1),
     ]);
-    return NextResponse.json({ live: h, zrange: zr, zrevrange: zrev });
+    return NextResponse.json({ live: h, zrange: zr });
   } catch (e: any) {
     return NextResponse.json({ error: String(e?.message ?? e), name: e?.name }, { status: 500 });
   }
