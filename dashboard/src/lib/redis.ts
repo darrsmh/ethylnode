@@ -24,25 +24,22 @@ export async function getLive() {
 export async function pushSamples(samples: object[]) {
   if (!samples.length) return;
   for (const s of samples) {
-    await redis.rpush(SAMPLES_KEY, JSON.stringify(s));
+    await redis.zadd(SAMPLES_KEY, { score: (s as any).ts, member: JSON.stringify(s) });
   }
-  await redis.ltrim(SAMPLES_KEY, -MAX_SAMPLES, -1);
+  await redis.zremrangebyrank(SAMPLES_KEY, 0, -(MAX_SAMPLES + 1));
 }
 
 export async function getSamples(count = 200) {
-  const raw = await redis.lrange(SAMPLES_KEY, -count, -1);
+  const raw = await redis.zrange(SAMPLES_KEY, -count, -1);
   if (!Array.isArray(raw)) return [];
-  const parsed = raw
-    .filter((r) => typeof r === "string")
+  return raw
     .map((r) => {
-      try {
-        return JSON.parse(r as string);
-      } catch {
-        return null;
+      if (typeof r === "string") {
+        try { return JSON.parse(r); } catch { return null; }
       }
+      return r;
     })
     .filter((s) => s !== null);
-  return parsed;
 }
 
 export async function pushAlert(alert: object) {

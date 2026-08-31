@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { redis, updateLive, pushSamples } from "@/lib/redis";
+import { updateLive, pushSamples } from "@/lib/redis";
 
 function verifyKey(req: NextRequest) {
   const key = req.headers.get("x-api-key");
@@ -31,16 +31,4 @@ export async function POST(req: NextRequest) {
   }
 
   return NextResponse.json({ ok: true, stored: samples?.length ?? 0 });
-}
-
-export async function GET(req: NextRequest) {
-  try {
-    const [h, zr] = await Promise.all([
-      redis.hgetall("seismic:live"),
-      redis.zrange("seismic:samples", -5, -1),
-    ]);
-    return NextResponse.json({ live: h, zrange: zr });
-  } catch (e: any) {
-    return NextResponse.json({ error: String(e?.message ?? e), name: e?.name }, { status: 500 });
-  }
 }
