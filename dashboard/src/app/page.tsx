@@ -11,10 +11,12 @@ import {
   CartesianGrid,
   Legend,
 } from "recharts";
+import { createSupabaseBrowser } from "@/lib/supabase-client";
 
 interface Live {
   node_id?: string;
   ts?: number;
+  updated_at?: string;
   pga_c?: number;
   sigma_f?: number;
   sigma_a?: number;
@@ -68,7 +70,10 @@ export default function Dashboard() {
       const res = await fetch("/api/live", { cache: "no-store" });
       const data = await res.json();
       setLive(data);
-      setOnline(!!data.ts && Date.now() - Number(data.ts) < 30000);
+      // Use server ingestion time (updated_at), not the ESP32's client ts,
+      // which may be wrong/old if the device's NTP sync failed.
+      const lastSeen = data.updated_at ? new Date(data.updated_at).getTime() : Number(data.ts);
+      setOnline(!!lastSeen && Date.now() - (lastSeen || 0) < 30000);
     } catch {
       setOnline(false);
     }
@@ -82,13 +87,71 @@ export default function Dashboard() {
     } catch {}
   }, []);
 
+  const fetchAlerts = useCallback(async () => {
+    try {
+      const res = await fetch("/api/alerts", { cache: "no-store" });
+      const data = await res.json();
+      setAlerts(data);
+    } catch {}
+  }, []);
+
   useEffect(() => {
     fetchLive();
     fetchHistory();
-    const t1 = setInterval(fetchLive, 1000);
-    const t2 = setInterval(fetchHistory, 1000);
-    return () => { clearInterval(t1); clearInterval(t2); };
-  }, [fetchLive, fetchHistory]);
+    fetchAlerts();
+
+    const supabase = createSupabaseBrowser();
+
+    const sampleChannel = supabase
+      .channel("samples-realtime")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "samples" },
+        (payload) => {
+          const row = payload.new as Sample;
+          setHistory((prev) => {
+            const next = [...prev, row];
+            return next.length > 600 ? next.slice(-600) : next;
+          });
+          setLive((prev) => ({
+            ...prev,
+            ts: row.ts,
+            pga_c: row.pga_c,
+            sigma_f: row.sigma_f,
+            sigma_a: row.sigma_a,
+            sigma_m: row.sigma_m,
+            snr_db: row.snr_db,
+            roll: row.roll,
+            pitch: row.pitch,
+          }));
+          setOnline(true);
+        }
+      )
+      .subscribe();
+
+    const alertChannel = supabase
+      .channel("alerts-realtime")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "alerts" },
+        (payload) => {
+          const row = payload.new as Alert;
+          setAlerts((prev) => [row, ...prev].slice(0, 50));
+          setLive((prev) => ({
+            ...prev,
+            last_alert_pga: row.pga,
+            last_alert_ts: row.ts_ms,
+            last_alert_snr: row.snr_db,
+          }));
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(sampleChannel);
+      supabase.removeChannel(alertChannel);
+    };
+  }, [fetchLive, fetchHistory, fetchAlerts]);
 
   const chartData = history.map((s) => ({
     ...s,

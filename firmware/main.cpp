@@ -295,12 +295,34 @@ static bool initMPU6050() {
 // ════════════════════════════════════════════════════════════════════
 //  WiFi helpers
 // ════════════════════════════════════════════════════════════════════
-static void wifiReconnect() {
-    if (WiFi.status() == WL_CONNECTED) return;
-    WiFi.disconnect(true); delay(500);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
+// Force reliable public DNS servers so hostname resolution
+// (e.g. ethylnode.vercel.app) does not depend on the router's DHCP DNS.
+// Force reliable public DNS servers so hostname resolution
+// (e.g. ethylnode.vercel.app) does not depend on the router's DHCP DNS.
+static void setStaticDNS() {
+    if (WiFi.status() != WL_CONNECTED) return;
+    WiFi.config(
+        WiFi.localIP(),            // keep DHCP address
+        WiFi.gatewayIP(),          // keep gateway
+        WiFi.subnetMask(),         // keep subnet
+        IPAddress(8, 8, 8, 8),     // primary DNS
+        IPAddress(1, 1, 1, 1)      // secondary DNS
+    );
+}
+
+static bool waitConnected(uint32_t timeoutMs) {
     uint32_t t0 = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) delay(300);
+    while (WiFi.status() != WL_CONNECTED && millis() - t0 < timeoutMs) delay(300);
+    if (WiFi.status() == WL_CONNECTED) setStaticDNS();
+    return WiFi.status() == WL_CONNECTED;
+}
+
+static void wifiReconnect() {
+    if (WiFi.status() != WL_CONNECTED) {
+        WiFi.disconnect(true); delay(500);
+        WiFi.begin(WIFI_SSID, WIFI_PASS);
+        waitConnected(15000);
+    }
 }
 
 // ── NTP: real epoch time (ms) offset vs millis() ─────────────────────
@@ -324,12 +346,27 @@ static void syncNTP() {
 
 static SemaphoreHandle_t g_netMutex = nullptr;
 
+// Persistent TLS + HTTP client — avoids reconnecting on every POST
+static WiFiClientSecure g_tlsClient;
+static bool g_tlsInited = false;
+
+static void initTlsClient() {
+    if (!g_tlsInited) {
+        g_tlsClient.setInsecure();
+        g_tlsInited = true;
+    }
+}
+
 static int httpsPost(const char* path, const String& body) {
     if (g_netMutex) xSemaphoreTake(g_netMutex, portMAX_DELAY);
-    WiFiClientSecure client;
-    client.setInsecure();
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("[NET] WiFi down, dropping POST");
+        if (g_netMutex) xSemaphoreGive(g_netMutex);
+        return -1;
+    }
+    initTlsClient();
     HTTPClient http;
-    if (!http.begin(client, String(API_BASE_URL) + path)) {
+    if (!http.begin(g_tlsClient, String(API_BASE_URL) + path)) {
         Serial.printf("[NET] begin() failed: %s%s\n", API_BASE_URL, path);
         if (g_netMutex) xSemaphoreGive(g_netMutex);
         return -1;
@@ -337,10 +374,12 @@ static int httpsPost(const char* path, const String& body) {
     http.addHeader("Content-Type", "application/json");
     http.addHeader("X-Api-Key", API_KEY);
     http.setTimeout(10000);
+    http.setReuse(true);
     int code = http.POST(body);
     if (code < 0) {
         Serial.printf("[NET] POST error: code=%d, conn=%d, freeHeap=%d\n",
-                      code, client.connected() ? 1 : 0, ESP.getFreeHeap());
+                      code, g_tlsClient.connected() ? 1 : 0, ESP.getFreeHeap());
+        g_tlsClient.stop();
     }
     http.end();
     if (g_netMutex) xSemaphoreGive(g_netMutex);
@@ -571,45 +610,61 @@ static void taskWiFiUpload(void*) {
     }
     Serial.printf("[WiFi] %s\n",
         WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "OFFLINE");
-    if (WiFi.status() == WL_CONNECTED) syncNTP();
+    if (WiFi.status() == WL_CONNECTED) { setStaticDNS(); syncNTP(); }
+    WiFi.setSleep(false);  // keep radio awake for low-latency sends
 
     uint32_t lastUpload = 0, lastWifi = 0;
+
+    // Reuse a single JSON document to avoid heap fragmentation
+    DynamicJsonDocument doc(10240);
+
+    // Temp buffer to snapshot ring buffer before POST — prevents data loss on failure
+    SampleRec tmpBuf[80];
 
     while (true) {
         if (millis() - lastWifi > 30000) { lastWifi = millis(); wifiReconnect(); }
 
-        // 1-second batch upload
-        if (millis() - lastUpload >= 1000 && WiFi.status() == WL_CONNECTED) {
+        // 100ms batch upload (was 500ms)
+        if (millis() - lastUpload >= 100 && WiFi.status() == WL_CONNECTED) {
             lastUpload = millis();
-            DynamicJsonDocument doc(10240);
-            doc["node_id"]     = "ADXL345-01";
-            doc["fw"]          = "2.0.0";
-            doc["threshold_g"] = DETECT_THRESHOLD_G;
-            doc["cf_alpha"]    = CF_ALPHA;
-            doc["w_adxl"]      = W_ADXL;
-            doc["w_mpu"]       = W_MPU;
 
-            JsonArray arr = doc.createNestedArray("samples");
+            // Snapshot samples into temp buffer WITHOUT advancing tail
             int cnt = 0;
-            while (sTail != sHead && cnt < 80) {
-                JsonObject s = arr.createNestedObject();
-                s["ts"]      = sRing[sTail].ts;
-                s["pga_c"]   = sRing[sTail].pga_c;
-                s["roll"]    = sRing[sTail].roll;
-                s["pitch"]   = sRing[sTail].pitch;
-                s["sigma_f"] = sRing[sTail].sigma_f;
-                s["sigma_a"] = sRing[sTail].sigma_a;
-                s["sigma_m"] = sRing[sTail].sigma_m;
-                s["snr_db"]  = sRing[sTail].snr_db;
-                sTail = (sTail + 1) % 1000;
+            int peek = sTail;
+            while (peek != sHead && cnt < 80) {
+                tmpBuf[cnt] = sRing[peek];
+                peek = (peek + 1) % 1000;
                 cnt++;
             }
             if (cnt) {
+                doc.clear();
+                doc["node_id"]     = "ADXL345-01";
+                doc["fw"]          = "2.0.0";
+                doc["threshold_g"] = DETECT_THRESHOLD_G;
+                doc["cf_alpha"]    = CF_ALPHA;
+                doc["w_adxl"]      = W_ADXL;
+                doc["w_mpu"]       = W_MPU;
+
+                JsonArray arr = doc.createNestedArray("samples");
+                for (int i = 0; i < cnt; i++) {
+                    JsonObject s = arr.createNestedObject();
+                    s["ts"]      = tmpBuf[i].ts;
+                    s["pga_c"]   = tmpBuf[i].pga_c;
+                    s["roll"]    = tmpBuf[i].roll;
+                    s["pitch"]   = tmpBuf[i].pitch;
+                    s["sigma_f"] = tmpBuf[i].sigma_f;
+                    s["sigma_a"] = tmpBuf[i].sigma_a;
+                    s["sigma_m"] = tmpBuf[i].sigma_m;
+                    s["snr_db"]  = tmpBuf[i].snr_db;
+                }
                 String body; serializeJson(doc, body);
-                Serial.printf("[WiFi] %d samples, body=%u B, freeHeap=%d\n",
-                              cnt, body.length(), ESP.getFreeHeap());
                 int code = httpsPost("/api/ingest", body);
-                Serial.printf("[WiFi] %d samples → HTTP %d\n", cnt, code);
+                if (code > 0 && code < 400) {
+                    // Success — advance tail past the samples we just sent
+                    sTail = peek;
+                }
+                Serial.printf("[WiFi] %d samples → HTTP %d | freeHeap=%d\n",
+                              cnt, code, ESP.getFreeHeap());
             }
         }
 
@@ -687,7 +742,7 @@ static void taskHeartbeat(void*) {
             if (WiFi.status() == WL_CONNECTED) {
                 StaticJsonDocument<256> doc;
                 doc["node_id"]   = "ADXL345-01";
-                doc["ts_ms"]     = millis();
+                doc["ts_ms"]     = (uint32_t)(g_epochOffsetMs + (int64_t)millis());
                 doc["status"]    = "alive";
                 doc["rssi_dbm"]  = WiFi.RSSI();
                 doc["free_heap"] = ESP.getFreeHeap();

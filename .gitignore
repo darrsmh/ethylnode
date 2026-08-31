@@ -8,3 +8,5 @@ secrets.h
 dashboard/node_modules/
 dashboard/.next/
 dashboard/.env.local
+.vercel
+.env*

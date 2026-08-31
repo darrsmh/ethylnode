@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { setHeartbeat } from "@/lib/redis";
+import { setHeartbeat } from "@/lib/db";
 
 function verifyKey(req: NextRequest) {
   return req.headers.get("x-api-key") === process.env.API_KEY;

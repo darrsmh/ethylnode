@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSamples } from "@/lib/redis";
+import { getSamples } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 

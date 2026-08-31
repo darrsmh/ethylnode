@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getLive } from "@/lib/redis";
+import { getLive } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
