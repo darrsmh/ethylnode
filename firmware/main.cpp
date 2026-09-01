@@ -97,7 +97,7 @@
 #define PIN_I2C_SCL     22
 #define PIN_LED          2
 
-#define MPU6050_ADDR    0x70  // non-standard address confirmed by I2C bus scan
+#define MPU6050_ADDR    0x68  // standard I2C address (AD0 tied low)
 
 // ── ADXL345 registers ─────────────────────────────────────────────
 // Register definitions are now provided by the ADXL345_WE library.
