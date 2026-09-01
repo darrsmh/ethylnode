@@ -40,6 +40,8 @@ static int _httpsPostWith(WiFiClientSecure& client, bool& ready,
     if (WiFi.status() != WL_CONNECTED) return -99;
 
     if (!ready) {
+        client.~WiFiClientSecure();
+        new (&client) WiFiClientSecure();
         client.setInsecure();
         ready = true;
     }
