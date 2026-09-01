@@ -517,8 +517,8 @@ static void taskSensor(void*) {
         if (pga_a < TILT_FREEZE_G && !tiltFrozen) {
             // Eq 3.11–3.12: normal complementary filter update (requires gyro from MPU6050)
             // Graceful fallback: if MPU6050 is offline, gyro is zero and filter reduces to accel-only tilt
-            phi   = CF_ALPHA * (phi   + gx * DT) + (1.0f - CF_ALPHA) * phiA;  // gx=0 if MPU offline
-            theta = CF_ALPHA * (theta + gy * DT) + (1.0f - CF_ALPHA) * thetaA;  // gy=0 if MPU offline
+            phi   = CF_ALPHA * (phi   + gx * DT) + (1.0f - CF_ALPHA) * phiA;  // gx=0 if MPU offline → reduces to phiA
+            theta = CF_ALPHA * (theta + gy * DT) + (1.0f - CF_ALPHA) * thetaA;  // gy=0 if MPU offline → reduces to thetaA
         } else if (pga_a >= TILT_FREEZE_G) {
             tiltFrozen = true;  // freeze on first exceedance
             unfreezeT = 0;  // reset timer on each new freeze
@@ -549,8 +549,8 @@ static void taskSensor(void*) {
 
         // ── Publish telemetry ─────────────────────────────────────
         g_livePGA    = pga_c;
-        g_liveRoll   = phi   * (180.0f / M_PI);
-        g_livePitch  = theta * (180.0f / M_PI);
+        g_liveRoll   = phi   * (180.0f / M_PI);  // roll from complementary filter or accel fallback
+        g_livePitch  = theta * (180.0f / M_PI);  // pitch from complementary filter or accel fallback
         g_liveSigmaF = sigma_c;
         g_liveSigmaA = sigma_a;
         g_liveSigmaM = sigma_b;
