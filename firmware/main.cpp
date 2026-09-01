@@ -97,7 +97,7 @@
 #define PIN_I2C_SCL     22
 #define PIN_LED          2
 
-#define MPU6050_ADDR    0x68
+#define MPU6050_ADDR    0x70  // non-standard address confirmed by I2C bus scan
 
 // ── ADXL345 registers ─────────────────────────────────────────────
 // Register definitions are now provided by the ADXL345_WE library.
@@ -221,19 +221,24 @@ static bool initADXL345() {
 //  I2C bus scan
 // ════════════════════════════════════════════════════════════════════
 static void scanI2C() {
-    Serial.println("[I2C] Scanning bus…");
-    uint8_t count = 0;
+    // I2C bus scan — runs at every boot to catch address/wiring issues early
+    Serial.println("[I2C] Scanning bus...");
+    uint8_t found = 0;
     for (uint8_t addr = 1; addr < 127; addr++) {
         Wire.beginTransmission(addr);
         if (Wire.endTransmission() == 0) {
-            Serial.printf("[I2C]   found 0x%02X\n", addr);
-            count++;
+            // Label known devices for easier diagnosis
+            const char* label = "";
+            if (addr == 0x53 || addr == 0x1D) label = " ← ADXL345";
+            else if (addr == 0x68 || addr == 0x69) label = " ← MPU6050 (standard)";
+            else if (addr == 0x70) label = " ← MPU6050 (non-standard) or TCA9548A mux";
+            else if (addr == 0x76 || addr == 0x77) label = " ← BMP280/BME280";
+            Serial.printf("[I2C] Found: 0x%02X%s\n", addr, label);
+            found++;
         }
     }
-    if (count == 0)
-        Serial.println("[I2C]   NO devices found — check SDA/SCL wiring + pull-ups + power");
-    else
-        Serial.printf("[I2C]   %u device(s) on bus\n", count);
+    if (found == 0) Serial.println("[I2C] No devices found — check wiring and pull-ups");
+    else Serial.printf("[I2C] Scan complete — %u device(s) found\n", found);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -510,9 +515,10 @@ static void taskSensor(void*) {
 
         // Freeze tilt during seismic activity (PGA > TILT_FREEZE_G)
         if (pga_a < TILT_FREEZE_G && !tiltFrozen) {
-            // Eq 3.11–3.12: normal complementary filter update
-            phi   = CF_ALPHA * (phi   + gx * DT) + (1.0f - CF_ALPHA) * phiA;
-            theta = CF_ALPHA * (theta + gy * DT) + (1.0f - CF_ALPHA) * thetaA;
+            // Eq 3.11–3.12: normal complementary filter update (requires gyro from MPU6050)
+            // Graceful fallback: if MPU6050 is offline, gyro is zero and filter reduces to accel-only tilt
+            phi   = CF_ALPHA * (phi   + gx * DT) + (1.0f - CF_ALPHA) * phiA;  // gx=0 if MPU offline
+            theta = CF_ALPHA * (theta + gy * DT) + (1.0f - CF_ALPHA) * thetaA;  // gy=0 if MPU offline
         } else if (pga_a >= TILT_FREEZE_G) {
             tiltFrozen = true;  // freeze on first exceedance
             unfreezeT = 0;  // reset timer on each new freeze
@@ -868,8 +874,13 @@ void setup() {
         while (true) { digitalWrite(PIN_LED, !digitalRead(PIN_LED)); delay(200); }
     }
     if (!initMPU6050()) {
-        Serial.println("[FATAL] MPU6050 not detected — check I2C wiring");
-        while (true) { digitalWrite(PIN_LED, !digitalRead(PIN_LED)); delay(500); }
+        // Loud failure — roll/pitch will be stuck at 0 if MPU6050 is unavailable
+        Serial.println("════════════════════════════════════════");
+        Serial.println("[MPU6050] INIT FAIL — check I2C address and wiring");
+        Serial.println("[MPU6050] Expected address: 0x70 — run I2C scan to verify");
+        Serial.println("[MPU6050] Roll/pitch will be frozen at 0° until this is resolved");
+        Serial.println("════════════════════════════════════════");
+        // Do NOT halt — ADXL345-only pipeline (A) can still run
     }
     // initSD();  // uncomment when SD card is wired up
 
