@@ -71,7 +71,6 @@
 #include <ArduinoJson.h>
 #include <math.h>
 #include "ADXL345_WE.h"
-#include "net.h"
 
 #if __has_include("secrets.h")
 #include "secrets.h"
@@ -361,7 +360,38 @@ static void syncNTP() {
     }
 }
 
+static SemaphoreHandle_t g_netMutex = nullptr;
 
+static int httpsPost(const char* path, const String& body) {
+    if (g_netMutex) xSemaphoreTake(g_netMutex, portMAX_DELAY);
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("[NET] WiFi down, dropping POST");
+        if (g_netMutex) xSemaphoreGive(g_netMutex);
+        return -1;
+    }
+    // Fresh client per request — reusing a WiFiClientSecure across requests
+    // leaves it in a stale TLS state and subsequent POSTs fail with -1/conn=0.
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient http;
+    if (!http.begin(client, String(API_BASE_URL) + path)) {
+        Serial.printf("[NET] begin() failed: %s%s\n", API_BASE_URL, path);
+        if (g_netMutex) xSemaphoreGive(g_netMutex);
+        return -1;
+    }
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("X-Api-Key", API_KEY);
+    http.setTimeout(10000);
+    int code = http.POST(body);
+    if (code < 0) {
+        Serial.printf("[NET] POST error: code=%d, conn=%d, freeHeap=%d\n",
+                      code, client.connected() ? 1 : 0, ESP.getFreeHeap());
+    }
+    http.end();
+    client.stop();
+    if (g_netMutex) xSemaphoreGive(g_netMutex);
+    return code;
+}
 
 // ════════════════════════════════════════════════════════════════════
 //  MicroSD helpers
@@ -642,7 +672,7 @@ static void taskWiFiUpload(void*) {
                     s["snr_db"]  = tmpBuf[i].snr_db;
                 }
                 String body; serializeJson(doc, body);
-                int code = netIngestPost(body);
+                int code = httpsPost("/api/ingest", body);
                 if (code > 0 && code < 400) {
                     // Success — advance tail past the samples we just sent
                     sTail = peek;
@@ -691,7 +721,7 @@ static void taskAlert(void*) {
             doc["noise_reduction_eta"] = serialized(String(eta,            3));
             doc["noise_reduction_pct"] = serialized(String(pct,            1));
             String body; serializeJson(doc, body);
-            int code = netAlertPost("/api/alerts", body);
+            int code = httpsPost("/api/alerts", body);
             Serial.printf("[Cloud] Alert POST → HTTP %d | PGA=%.5fg η=%.3f\n",
                           code, al.pga, eta);
         }
@@ -732,7 +762,7 @@ static void taskHeartbeat(void*) {
                 doc["rssi_dbm"]  = WiFi.RSSI();
                 doc["free_heap"] = ESP.getFreeHeap();
                 String body; serializeJson(doc, body);
-                netAlertPost("/api/heartbeat", body);
+                httpsPost("/api/heartbeat", body);
             }
             // SD heartbeat
             char csv[128];
@@ -859,7 +889,7 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(PIN_ADXL_INT1), onDataReady, RISING);
 
     g_alertSem = xSemaphoreCreateBinary();
-    netInit();
+    g_netMutex = xSemaphoreCreateMutex();
 
     // Core 0: time-critical 200 Hz sensor acquisition (highest priority)
     xTaskCreatePinnedToCore(taskSensor,   "Sensor",   8192, nullptr,

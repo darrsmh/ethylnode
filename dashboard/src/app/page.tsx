@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useRef } from "react";
 import {
   LineChart,
   Line,
@@ -29,6 +29,7 @@ interface Live {
 }
 
 interface Sample {
+  node_id?: string;
   ts: number;
   pga_c: number;
   sigma_f: number;
@@ -77,42 +78,28 @@ export default function Dashboard() {
   const [live, setLive] = useState<Live>({});
   const [history, setHistory] = useState<Sample[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [online, setOnline] = useState(false);
 
-  const fetchLive = useCallback(async () => {
-    try {
-      const res = await fetch("/api/live", { cache: "no-store" });
-      const data = await res.json();
-      setLive(data);
-      // Use server ingestion time (updated_at), not the ESP32's client ts,
-      // which may be wrong/old if the device's NTP sync failed.
-      const lastSeen = data.updated_at ? new Date(data.updated_at).getTime() : Number(data.ts);
-      setOnline(!!lastSeen && Date.now() - (lastSeen || 0) < 30000);
-    } catch {
-      setOnline(false);
-    }
-  }, []);
-
-  const fetchHistory = useCallback(async () => {
-    try {
-      const res = await fetch("/api/live/history?count=200", { cache: "no-store" });
-      const data = await res.json();
-      setHistory(data);
-    } catch {}
-  }, []);
-
-  const fetchAlerts = useCallback(async () => {
-    try {
-      const res = await fetch("/api/alerts", { cache: "no-store" });
-      const data = await res.json();
-      setAlerts(data);
-    } catch {}
-  }, []);
+  // Incoming Realtime sample rows are buffered and flushed a few times per
+  // second so the charts don't re-render on every single insert (~200/sec).
+  const pendingRef = useRef<Sample[]>([]);
 
   useEffect(() => {
-    fetchLive();
-    fetchHistory();
-    fetchAlerts();
+    let mounted = true;
+
+    const loadInitial = async () => {
+      try {
+        const [h, a, l] = await Promise.all([
+          fetch("/api/live/history?count=200", { cache: "no-store" }).then((r) => r.json()),
+          fetch("/api/alerts", { cache: "no-store" }).then((r) => r.json()),
+          fetch("/api/live", { cache: "no-store" }).then((r) => r.json()),
+        ]);
+        if (!mounted) return;
+        if (Array.isArray(h)) setHistory(h);
+        if (Array.isArray(a)) setAlerts(a);
+        if (l && typeof l === "object") setLive(l);
+      } catch {}
+    };
+    loadInitial();
 
     const supabase = createSupabaseBrowser();
 
@@ -123,22 +110,7 @@ export default function Dashboard() {
         { event: "INSERT", schema: "public", table: "samples" },
         (payload) => {
           const row = payload.new as Sample;
-          setHistory((prev) => {
-            const next = [...prev, row];
-            return next.length > 600 ? next.slice(-600) : next;
-          });
-          setLive((prev) => ({
-            ...prev,
-            ts: row.ts,
-            pga_c: row.pga_c,
-            sigma_f: row.sigma_f,
-            sigma_a: row.sigma_a,
-            sigma_m: row.sigma_m,
-            snr_db: row.snr_db,
-            roll: row.roll,
-            pitch: row.pitch,
-          }));
-          setOnline(true);
+          pendingRef.current.push(row);
         }
       )
       .subscribe();
@@ -161,11 +133,48 @@ export default function Dashboard() {
       )
       .subscribe();
 
+    // Flush buffered samples ~5x/sec. Each flush is ONE setState, so the
+    // graph redraws smoothly without re-rendering per inserted row.
+    const flush = setInterval(() => {
+      const batch = pendingRef.current;
+      if (!batch.length) return;
+      pendingRef.current = [];
+      const latest = batch[batch.length - 1];
+      setHistory((prev) => {
+        const next = [...prev, ...batch];
+        return next.length > 300 ? next.slice(-300) : next;
+      });
+      setLive((prev) => ({
+        ...prev,
+        node_id: latest.node_id,
+        ts: latest.ts,
+        pga_c: latest.pga_c,
+        sigma_f: latest.sigma_f,
+        sigma_a: latest.sigma_a,
+        sigma_m: latest.sigma_m,
+        snr_db: latest.snr_db,
+        roll: latest.roll,
+        pitch: latest.pitch,
+      }));
+    }, 200);
+
+    // Reconnect fell off the Realtime stream: a slow poll keeps the dashboard
+    // honest without the churn of a fast poll.
+    const slowPoll = setInterval(() => {
+      fetch("/api/live/history?count=200", { cache: "no-store" })
+        .then((r) => r.json())
+        .then((h) => mounted && Array.isArray(h) && setHistory(h))
+        .catch(() => {});
+    }, 20000);
+
     return () => {
+      mounted = false;
       supabase.removeChannel(sampleChannel);
       supabase.removeChannel(alertChannel);
+      clearInterval(flush);
+      clearInterval(slowPoll);
     };
-  }, [fetchLive, fetchHistory, fetchAlerts]);
+  }, []);
 
   const chartData = history.map((s) => ({
     ...s,
@@ -177,6 +186,17 @@ export default function Dashboard() {
       second: "2-digit",
     }),
   }));
+
+  // Online if the latest live timestamp is recent, else fall back to the
+  // newest history sample. Averaged against server ingestion time so a stale
+  // /api/live row doesn't falsely show OFFLINE while data is flowing.
+  let online = false;
+  const lastLiveTs = live.ts ?? history[history.length - 1]?.ts;
+  if (lastLiveTs && lastLiveTs > 1000000000000) {
+    online = Date.now() - lastLiveTs < 30000;
+  } else if (live.updated_at) {
+    online = Date.now() - new Date(live.updated_at).getTime() < 30000;
+  }
 
   return (
     <div className="dashboard">

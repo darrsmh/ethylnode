@@ -25,7 +25,7 @@ export async function getLive() {
     .select("*")
     .eq("node_id", "ADXL345-01")
     .single();
-  return data ?? {};
+  return (data ?? {}) as Record<string, unknown>;
 }
 
 // ── Samples ───────────────────────────────────────────────────
