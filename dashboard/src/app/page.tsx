@@ -74,6 +74,24 @@ function ago(ms: number) {
   return `${Math.floor(s / 3600)}h ago`;
 }
 
+// Supabase Realtime serializes BIGINT columns (like `ts`) as JSON strings to
+// avoid precision loss > 2^53. Normalize them back to numbers so the chart
+// X-axis, `new Date(ts)`, and the online check all receive numeric ms.
+function normalizeSample(row: Record<string, unknown>): Sample {
+  const toNum = (v: unknown) => (v === null || v === undefined || v === "" ? NaN : Number(v));
+  return {
+    node_id: (row.node_id as string) ?? undefined,
+    ts: toNum(row.ts),
+    pga_c: toNum(row.pga_c),
+    sigma_f: toNum(row.sigma_f),
+    sigma_a: toNum(row.sigma_a),
+    sigma_m: toNum(row.sigma_m),
+    snr_db: toNum(row.snr_db),
+    roll: toNum(row.roll),
+    pitch: toNum(row.pitch),
+  };
+}
+
 export default function Dashboard() {
   const [live, setLive] = useState<Live>({});
   const [history, setHistory] = useState<Sample[]>([]);
@@ -89,12 +107,12 @@ export default function Dashboard() {
     const loadInitial = async () => {
       try {
         const [h, a, l] = await Promise.all([
-          fetch("/api/live/history?count=200", { cache: "no-store" }).then((r) => r.json()),
+          fetch("/api/live/history?count=600", { cache: "no-store" }).then((r) => r.json()),
           fetch("/api/alerts", { cache: "no-store" }).then((r) => r.json()),
           fetch("/api/live", { cache: "no-store" }).then((r) => r.json()),
         ]);
         if (!mounted) return;
-        if (Array.isArray(h)) setHistory(h);
+        if (Array.isArray(h)) setHistory(h.map((r) => normalizeSample(r)));
         if (Array.isArray(a)) setAlerts(a);
         if (l && typeof l === "object") setLive(l);
       } catch {}
@@ -109,8 +127,7 @@ export default function Dashboard() {
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "samples" },
         (payload) => {
-          const row = payload.new as Sample;
-          pendingRef.current.push(row);
+          pendingRef.current.push(normalizeSample(payload.new as Record<string, unknown>));
         }
       )
       .subscribe();
@@ -142,7 +159,7 @@ export default function Dashboard() {
       const latest = batch[batch.length - 1];
       setHistory((prev) => {
         const next = [...prev, ...batch];
-        return next.length > 300 ? next.slice(-300) : next;
+        return next.length > 1500 ? next.slice(-1500) : next;
       });
       setLive((prev) => ({
         ...prev,
@@ -161,9 +178,9 @@ export default function Dashboard() {
     // Reconnect fell off the Realtime stream: a slow poll keeps the dashboard
     // honest without the churn of a fast poll.
     const slowPoll = setInterval(() => {
-      fetch("/api/live/history?count=200", { cache: "no-store" })
+      fetch("/api/live/history?count=600", { cache: "no-store" })
         .then((r) => r.json())
-        .then((h) => mounted && Array.isArray(h) && setHistory(h))
+        .then((h) => mounted && Array.isArray(h) && setHistory(h.map((r) => normalizeSample(r))))
         .catch(() => {});
     }, 20000);
 
