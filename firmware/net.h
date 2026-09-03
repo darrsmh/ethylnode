@@ -25,10 +25,20 @@ inline void netInit() {
     g_netMutex = xSemaphoreCreateMutex();
 }
 
+static String _extractHost() {
+    String h(API_BASE_URL);
+    if (h.startsWith("https://")) h.remove(0, 8);
+    else if (h.startsWith("http://")) h.remove(0, 7);
+    if (h.endsWith("/")) h.remove(h.length() - 1);
+    return h;
+}
+
 static int _httpsPost(const char* path, const String& body) {
     if (WiFi.status() != WL_CONNECTED) return -99;
 
     if (g_netMutex) xSemaphoreTake(g_netMutex, portMAX_DELAY);
+
+    String apiHost = _extractHost();
 
     WiFiClientSecure client;
     client.setInsecure();
@@ -37,10 +47,46 @@ static int _httpsPost(const char* path, const String& body) {
     HTTPClient http;
     http.setTimeout(8000);
 
-    if (!http.begin(client, String(API_BASE_URL) + path)) {
-        Serial.printf("[NET] begin() failed: %s%s\n", API_BASE_URL, path);
+    if (!http.begin(client, apiHost, (uint16_t)443, String(path), true)) {
+        Serial.printf("[NET] begin() failed: %s freeHeap=%d\n",
+                      apiHost.c_str(), ESP.getFreeHeap());
+        http.end();
+        client.stop();
         if (g_netMutex) xSemaphoreGive(g_netMutex);
-        return -1;
+        delay(200);
+        if (g_netMutex) xSemaphoreTake(g_netMutex, portMAX_DELAY);
+
+        WiFiClientSecure retryClient;
+        retryClient.setInsecure();
+        retryClient.setTimeout(8000);
+        HTTPClient http2;
+        http2.setTimeout(8000);
+
+        if (!http2.begin(retryClient, apiHost, (uint16_t)443, String(path), true)) {
+            Serial.printf("[NET] begin() failed (2nd try): %s freeHeap=%d\n",
+                          apiHost.c_str(), ESP.getFreeHeap());
+            http2.end();
+            if (g_netMutex) xSemaphoreGive(g_netMutex);
+            return -1;
+        }
+
+        http2.addHeader("Content-Type", "application/json");
+        http2.addHeader("X-Api-Key",    API_KEY);
+
+        int code = http2.POST(body);
+        if (code < 0) {
+            Serial.printf("[NET] POST error %d (%s) freeHeap=%d\n", code,
+                          code == -1 ? "begin/TLS failed" : "unknown",
+                          ESP.getFreeHeap());
+        } else if (code >= 400) {
+            Serial.printf("[NET] %s HTTP %d (auth 401 or 4xx/5xx — check API_KEY)\n",
+                          String(path).c_str(), code);
+        }
+
+        http2.end();
+        retryClient.stop();
+        if (g_netMutex) xSemaphoreGive(g_netMutex);
+        return code;
     }
 
     http.addHeader("Content-Type", "application/json");
@@ -48,7 +94,12 @@ static int _httpsPost(const char* path, const String& body) {
 
     int code = http.POST(body);
     if (code < 0) {
-        Serial.printf("[NET] POST error %d freeHeap=%d\n", code, ESP.getFreeHeap());
+        Serial.printf("[NET] POST error %d (%s) freeHeap=%d\n", code,
+                      code == -1 ? "begin/TLS failed" : "unknown",
+                      ESP.getFreeHeap());
+    } else if (code >= 400) {
+        Serial.printf("[NET] %s HTTP %d (auth 401 or 4xx/5xx — check API_KEY)\n",
+                      String(path).c_str(), code);
     }
 
     http.end();

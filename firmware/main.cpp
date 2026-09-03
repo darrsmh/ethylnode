@@ -71,7 +71,6 @@
 #include <ArduinoJson.h>
 #include <math.h>
 #include "ADXL345_WE.h"
-#include "net.h"
 
 #if __has_include("secrets.h")
 #include "secrets.h"
@@ -81,6 +80,8 @@
 #define API_BASE_URL  ""
 #define API_KEY       ""
 #endif
+
+#include "net.h"
 
 // ── Pin definitions ───────────────────────────────────────────────
 #define PIN_ADXL_CS     15
@@ -338,7 +339,15 @@ static void wifiReconnect() {
     if (WiFi.status() != WL_CONNECTED) {
         WiFi.disconnect(true); delay(500);
         WiFi.begin(WIFI_SSID, WIFI_PASS);
-        waitConnected(15000);
+        if (!waitConnected(15000)) return;
+
+        IPAddress resolved;
+        if (!WiFi.hostByName("ethylnode.vercel.app", resolved)) {
+            Serial.println("[WiFi] DNS resolve failed — forcing reconnect");
+            WiFi.disconnect(true); delay(500);
+            WiFi.begin(WIFI_SSID, WIFI_PASS);
+            waitConnected(15000);
+        }
     }
 }
 
@@ -594,16 +603,17 @@ static void taskWiFiUpload(void*) {
     WiFi.setSleep(false);  // keep radio awake for low-latency sends
 
     uint32_t lastUpload = 0, lastWifi = 0;
+    static int consecutiveFailures = 0;
 
     // Reuse a single JSON document to avoid heap fragmentation.
     // Sized for up to 100 samples (~130 B/sample) + header. Keeping this small
     // matters: the TLS handshake needs ~40KB CONTIGUOUS heap, and a large doc
     // fragments the heap causing "SSL - Memory allocation failed (-32512)".
-    static DynamicJsonDocument doc(18000);
+    static DynamicJsonDocument doc(12000);
 
     // Temp buffer to snapshot ring buffer before POST — prevents data loss on
     // failure. Static so it lives in BSS, not on the 16KB task stack.
-    static SampleRec tmpBuf[100];
+    static SampleRec tmpBuf[50];
 
     while (true) {
         if (millis() - lastWifi > 30000) { lastWifi = millis(); wifiReconnect(); }
@@ -615,7 +625,7 @@ static void taskWiFiUpload(void*) {
             // Snapshot samples into temp buffer WITHOUT advancing tail
             int cnt = 0;
             int peek = sTail;
-            while (peek != sHead && cnt < 100) {
+            while (peek != sHead && cnt < 50) {
                 tmpBuf[cnt] = sRing[peek];
                 peek = (peek + 1) % 1000;
                 cnt++;
@@ -643,12 +653,31 @@ static void taskWiFiUpload(void*) {
                 }
                 String body; serializeJson(doc, body);
                 int code = netIngestPost(body);
-                if (code > 0 && code < 400) {
+
+                // Treat ANY non-2xx/3xx as a failure. 401 (API key mismatch),
+                // 4xx (bad path), and 5xx (server error) all mean the batch was
+                // NOT stored, so the ring-buffer tail must NOT advance. Previously
+                // only -1 (TLS handshake) counted as a failure, which let a 401/5xx
+                // silently drop every batch forever with no reconnect/retry.
+                bool ok = (code >= 200 && code < 300);
+                if (!ok) {
+                    consecutiveFailures++;
+                    if (consecutiveFailures >= 5) {
+                        Serial.printf("[WiFi] %d consecutive HTTP failures (last=%d) — resetting WiFi\n",
+                                      consecutiveFailures, code);
+                        WiFi.disconnect(true);
+                        delay(1000);
+                        WiFi.begin(WIFI_SSID, WIFI_PASS);
+                        waitConnected(15000);
+                        consecutiveFailures = 0;
+                    }
+                } else {
+                    consecutiveFailures = 0;
                     // Success — advance tail past the samples we just sent
                     sTail = peek;
                 }
-                Serial.printf("[WiFi] %d samples → HTTP %d | freeHeap=%d\n",
-                              cnt, code, ESP.getFreeHeap());
+                Serial.printf("[WiFi] %d samples → HTTP %d %s | freeHeap=%d | sTail=%d\n",
+                              cnt, code, ok ? "OK" : "FAIL", ESP.getFreeHeap(), sTail);
             }
         }
 
