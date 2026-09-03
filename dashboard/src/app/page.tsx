@@ -107,7 +107,7 @@ export default function Dashboard() {
     const loadInitial = async () => {
       try {
         const [h, a, l] = await Promise.all([
-          fetch("/api/live/history?count=600", { cache: "no-store" }).then((r) => r.json()),
+          fetch("/api/live/history?count=6000", { cache: "no-store" }).then((r) => r.json()),
           fetch("/api/alerts", { cache: "no-store" }).then((r) => r.json()),
           fetch("/api/live", { cache: "no-store" }).then((r) => r.json()),
         ]);
@@ -159,7 +159,7 @@ export default function Dashboard() {
       const latest = batch[batch.length - 1];
       setHistory((prev) => {
         const next = [...prev, ...batch];
-        return next.length > 1500 ? next.slice(-1500) : next;
+        return next.length > 6000 ? next.slice(-6000) : next;
       });
       setLive((prev) => ({
         ...prev,
@@ -178,7 +178,7 @@ export default function Dashboard() {
     // Reconnect fell off the Realtime stream: a slow poll keeps the dashboard
     // honest without the churn of a fast poll.
     const slowPoll = setInterval(() => {
-      fetch("/api/live/history?count=600", { cache: "no-store" })
+      fetch("/api/live/history?count=6000", { cache: "no-store" })
         .then((r) => r.json())
         .then((h) => mounted && Array.isArray(h) && setHistory(h.map((r) => normalizeSample(r))))
         .catch(() => {});

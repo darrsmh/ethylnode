@@ -54,7 +54,7 @@ export async function getSamples(count = 200) {
     .from("samples")
     .select(SAMPLE_COLUMNS)
     .order("ts", { ascending: false })
-    .limit(Math.min(count, 600));
+    .limit(Math.min(count, 6000));
   return (data ?? []).reverse();
 }
 

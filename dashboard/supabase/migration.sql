@@ -81,13 +81,14 @@ ALTER PUBLICATION supabase_realtime ADD TABLE samples;
 ALTER PUBLICATION supabase_realtime ADD TABLE alerts;
 
 -- =============================================================
--- Auto-trim: keep only the latest 2000 samples
+-- Auto-trim: keep only the latest 10000 samples
+-- (headroom above the 6000-point graph fetch so ~30s @ 200Hz persists)
 -- =============================================================
 CREATE OR REPLACE FUNCTION trim_samples() RETURNS trigger AS $$
 BEGIN
   DELETE FROM samples
   WHERE id NOT IN (
-    SELECT id FROM samples ORDER BY ts DESC LIMIT 2000
+    SELECT id FROM samples ORDER BY ts DESC LIMIT 10000
   );
   RETURN NULL;
 END;
